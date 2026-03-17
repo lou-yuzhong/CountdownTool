@@ -12,6 +12,7 @@ import io
 # 配置文件路径
 CONFIG_FILE = "countdown_config.json"
 HISTORY_FILE = "countdown_history.json"
+STOPWATCH_HISTORY_FILE = "stopwatch_history.json"
 
 class CountdownTool(ctk.CTk):
     def __init__(self):
@@ -46,6 +47,14 @@ class CountdownTool(ctk.CTk):
         self.history_btn = ctk.CTkButton(self.sidebar_frame, text="查看历史记录", command=self.show_history)
         self.history_btn.grid(row=3, column=0, padx=20, pady=10)
 
+        # 秒表按钮
+        self.stopwatch_btn = ctk.CTkButton(self.sidebar_frame, text="秒表功能", command=self.switch_to_stopwatch)
+        self.stopwatch_btn.grid(row=4, column=0, padx=20, pady=10)
+
+        # 倒计时按钮
+        self.countdown_btn = ctk.CTkButton(self.sidebar_frame, text="倒计时功能", command=self.switch_to_countdown, state="disabled")
+        self.countdown_btn.grid(row=5, column=0, padx=20, pady=10)
+
         # 右侧主界面（大型倒计时显示）
         self.main_frame = ctk.CTkFrame(self, corner_radius=0)
         self.main_frame.grid(row=0, column=1, sticky="nsew")
@@ -77,12 +86,49 @@ class CountdownTool(ctk.CTk):
         self.reset_btn = ctk.CTkButton(self.control_frame, text="重置", command=self.reset_countdown, width=100)
         self.reset_btn.grid(row=0, column=2, padx=10, pady=10)
 
+        # 秒表相关控件
+        self.stopwatch_display = ctk.CTkLabel(self.main_frame, text="00:00:00", font=ctk.CTkFont(size=120, weight="bold"))
+        self.stopwatch_display.grid(row=1, column=0, padx=20, pady=20)
+        self.stopwatch_display.grid_remove()  # 初始隐藏
+
+        self.stopwatch_label = ctk.CTkLabel(self.main_frame, text="秒表模式", font=ctk.CTkFont(size=32))
+        self.stopwatch_label.grid(row=2, column=0, padx=20, pady=10)
+        self.stopwatch_label.grid_remove()  # 初始隐藏
+
+        self.stopwatch_control_frame = ctk.CTkFrame(self.main_frame)
+        self.stopwatch_control_frame.grid(row=3, column=0, padx=20, pady=20)
+        
+        self.stopwatch_start_btn = ctk.CTkButton(self.stopwatch_control_frame, text="开始", command=self.start_stopwatch, width=100)
+        self.stopwatch_start_btn.grid(row=0, column=0, padx=10, pady=10)
+
+        self.stopwatch_pause_btn = ctk.CTkButton(self.stopwatch_control_frame, text="暂停", command=self.pause_stopwatch, width=100)
+        self.stopwatch_pause_btn.grid(row=0, column=1, padx=10, pady=10)
+
+        self.stopwatch_reset_btn = ctk.CTkButton(self.stopwatch_control_frame, text="重置", command=self.reset_stopwatch, width=100)
+        self.stopwatch_reset_btn.grid(row=0, column=2, padx=10, pady=10)
+
+        self.stopwatch_record_btn = ctk.CTkButton(self.stopwatch_control_frame, text="记录", command=self.record_stopwatch, width=100)
+        self.stopwatch_record_btn.grid(row=0, column=3, padx=10, pady=10)
+
+        self.stopwatch_control_frame.grid_remove()  # 初始隐藏
+
+        # 秒表记录列表
+        self.stopwatch_records_frame = ctk.CTkScrollableFrame(self.main_frame, width=600, height=150)
+        self.stopwatch_records_frame.grid(row=4, column=0, padx=20, pady=10)
+        self.stopwatch_records_frame.grid_remove()  # 初始隐藏
+
         # 数据结构
         self.tasks = []
         self.current_task = None
         self.is_running = False
         self.remaining_time = 0
         self.start_time = 0
+        
+        # 秒表数据
+        self.stopwatch_running = False
+        self.stopwatch_start_time = 0
+        self.stopwatch_elapsed = 0
+        self.stopwatch_records = []
         
         # 系统托盘相关
         self.tray_icon = None
@@ -113,7 +159,7 @@ class CountdownTool(ctk.CTk):
             self.save_config()
         
         # 如果倒计时正在运行，显示托盘图标
-        if self.is_running:
+        if self.is_running or self.stopwatch_running:
             self.show_tray_icon()
 
     def show_tray_icon(self):
@@ -208,6 +254,22 @@ class CountdownTool(ctk.CTk):
     def save_history(self, history):
         """保存历史记录"""
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+
+    def load_stopwatch_history(self):
+        """加载秒表历史记录"""
+        if os.path.exists(STOPWATCH_HISTORY_FILE):
+            with open(STOPWATCH_HISTORY_FILE, "r", encoding="utf-8") as f:
+                try:
+                    return json.load(f)
+                except:
+                    return []
+        else:
+            return []
+
+    def save_stopwatch_history(self, history):
+        """保存秒表历史记录"""
+        with open(STOPWATCH_HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
 
     def add_task(self):
@@ -475,7 +537,9 @@ class CountdownTool(ctk.CTk):
     def show_history(self):
         """显示历史记录"""
         history = self.load_history()
-        if not history:
+        stopwatch_history = self.load_stopwatch_history()
+        
+        if not history and not stopwatch_history:
             messagebox.showinfo("历史记录", "暂无历史记录")
             return
 
@@ -487,8 +551,29 @@ class CountdownTool(ctk.CTk):
         history_window.grab_set()
 
         # 按日期分组历史记录
-        history_by_date = {}
+        all_history = []
+        
+        # 添加倒计时历史
         for entry in history:
+            all_history.append({
+                "type": "countdown",
+                "task_name": entry.get("task_name", "未知任务"),
+                "duration": entry.get("duration", 0),
+                "completed_at": entry.get("completed_at", datetime.now().isoformat())
+            })
+        
+        # 添加秒表历史
+        for entry in stopwatch_history:
+            all_history.append({
+                "type": "stopwatch",
+                "task_name": entry.get("task_name", "秒表计时"),
+                "duration": entry.get("duration", 0),
+                "completed_at": entry.get("completed_at", datetime.now().isoformat())
+            })
+
+        # 按日期分组
+        history_by_date = {}
+        for entry in all_history:
             date = datetime.fromisoformat(entry['completed_at']).strftime("%Y-%m-%d")
             if date not in history_by_date:
                 history_by_date[date] = []
@@ -517,7 +602,7 @@ class CountdownTool(ctk.CTk):
             seconds = total_seconds % 60
             total_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
             
-            date_label = ctk.CTkLabel(date_frame, text=f"日期：{date} (总学习时间：{total_str})", font=ctk.CTkFont(weight="bold"))
+            date_label = ctk.CTkLabel(date_frame, text=f"日期：{date} (总计时时间：{total_str})", font=ctk.CTkFont(weight="bold"))
             date_label.pack(padx=10, pady=5, anchor="w")
 
             # 添加当天的历史记录
@@ -525,8 +610,9 @@ class CountdownTool(ctk.CTk):
                 entry_frame = ctk.CTkFrame(history_list, width=650)
                 entry_frame.pack(pady=3, fill="x", padx=20)
 
-                # 任务名称
-                task_label = ctk.CTkLabel(entry_frame, text=f"任务：{entry['task_name']}", width=250, anchor="w")
+                # 任务类型和名称
+                type_text = "倒计时" if entry['type'] == "countdown" else "秒表"
+                task_label = ctk.CTkLabel(entry_frame, text=f"{type_text}：{entry['task_name']}", width=250, anchor="w")
                 task_label.pack(side="left", padx=10, pady=3)
 
                 # 持续时间
@@ -542,6 +628,164 @@ class CountdownTool(ctk.CTk):
                 completed_at = datetime.fromisoformat(entry['completed_at']).strftime("%H:%M:%S")
                 time_label = ctk.CTkLabel(entry_frame, text=f"完成：{completed_at}", width=150, anchor="w")
                 time_label.pack(side="left", padx=10, pady=3)
+
+    def switch_to_stopwatch(self):
+        """切换到秒表模式"""
+        # 隐藏倒计时相关控件
+        self.countdown_display.grid_remove()
+        self.task_name_label.grid_remove()
+        self.control_frame.grid_remove()
+        
+        # 显示秒表相关控件
+        self.stopwatch_display.grid()
+        self.stopwatch_label.grid()
+        self.stopwatch_control_frame.grid()
+        self.stopwatch_records_frame.grid()
+        
+        # 更新按钮状态
+        self.stopwatch_btn.configure(state="disabled")
+        self.countdown_btn.configure(state="normal")
+        
+        # 重置秒表显示
+        self.update_stopwatch_display()
+        self.update_stopwatch_records()
+
+    def switch_to_countdown(self):
+        """切换到倒计时模式"""
+        # 隐藏秒表相关控件
+        self.stopwatch_display.grid_remove()
+        self.stopwatch_label.grid_remove()
+        self.stopwatch_control_frame.grid_remove()
+        self.stopwatch_records_frame.grid_remove()
+        
+        # 显示倒计时相关控件
+        self.countdown_display.grid()
+        self.task_name_label.grid()
+        self.control_frame.grid()
+        
+        # 更新按钮状态
+        self.stopwatch_btn.configure(state="normal")
+        self.countdown_btn.configure(state="disabled")
+        
+        # 重置倒计时显示
+        if self.current_task:
+            self.remaining_time = self.current_task["remaining_seconds"]
+            self.task_name_label.configure(text=self.current_task["name"])
+        else:
+            self.task_name_label.configure(text="无活动任务")
+        self.update_countdown_display()
+
+    def update_stopwatch_display(self):
+        """更新秒表显示"""
+        elapsed = self.stopwatch_elapsed
+        hours = elapsed // 3600
+        minutes = (elapsed % 3600) // 60
+        seconds = elapsed % 60
+        time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        self.stopwatch_display.configure(text=time_str)
+
+    def start_stopwatch(self):
+        """开始秒表"""
+        if not self.stopwatch_running:
+            self.stopwatch_running = True
+            self.stopwatch_start_time = time.time() - self.stopwatch_elapsed
+            threading.Thread(target=self.stopwatch_thread, daemon=False).start()
+
+    def pause_stopwatch(self):
+        """暂停秒表"""
+        self.stopwatch_running = False
+
+    def reset_stopwatch(self):
+        """重置秒表"""
+        self.stopwatch_running = False
+        self.stopwatch_elapsed = 0
+        self.stopwatch_records = []
+        self.update_stopwatch_display()
+        self.update_stopwatch_records()
+
+    def record_stopwatch(self):
+        """记录秒表时间"""
+        if self.stopwatch_elapsed > 0:
+            record = {
+                "time": self.stopwatch_elapsed,
+                "timestamp": datetime.now().isoformat()
+            }
+            self.stopwatch_records.append(record)
+            self.update_stopwatch_records()
+
+    def stopwatch_thread(self):
+        """秒表线程"""
+        while self.stopwatch_running:
+            self.stopwatch_elapsed = int(time.time() - self.stopwatch_start_time)
+            self.update_stopwatch_display()
+            time.sleep(1)
+
+    def update_stopwatch_records(self):
+        """更新秒表记录列表"""
+        # 清空现有记录
+        for widget in self.stopwatch_records_frame.winfo_children():
+            widget.destroy()
+        
+        # 添加记录
+        for i, record in enumerate(self.stopwatch_records, 1):
+            record_frame = ctk.CTkFrame(self.stopwatch_records_frame, width=550)
+            record_frame.pack(pady=3, fill="x")
+            
+            record_num_label = ctk.CTkLabel(record_frame, text=f"记录 {i}", width=80, anchor="w")
+            record_num_label.pack(side="left", padx=10, pady=3)
+            
+            elapsed = record["time"]
+            hours = elapsed // 3600
+            minutes = (elapsed % 3600) // 60
+            seconds = elapsed % 60
+            time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            
+            time_label = ctk.CTkLabel(record_frame, text=f"时间：{time_str}", width=150, anchor="w")
+            time_label.pack(side="left", padx=10, pady=3)
+            
+            timestamp = datetime.fromisoformat(record["timestamp"]).strftime("%H:%M:%S")
+            timestamp_label = ctk.CTkLabel(record_frame, text=f"时间：{timestamp}", width=150, anchor="w")
+            timestamp_label.pack(side="left", padx=10, pady=3)
+            
+            # 保存按钮
+            save_btn = ctk.CTkButton(record_frame, text="保存", width=60, command=lambda r=record: self.save_stopwatch_record(r))
+            save_btn.pack(side="right", padx=5, pady=3)
+
+    def save_stopwatch_record(self, record):
+        """保存秒表记录"""
+        # 创建保存窗口
+        save_window = ctk.CTkToplevel(self)
+        save_window.title("保存秒表记录")
+        save_window.geometry("300x150")
+        save_window.transient(self)
+        save_window.grab_set()
+        
+        # 任务名称
+        ctk.CTkLabel(save_window, text="记录名称:").grid(row=0, column=0, padx=20, pady=10, sticky="w")
+        task_name_entry = ctk.CTkEntry(save_window, width=150)
+        task_name_entry.grid(row=0, column=1, padx=20, pady=10)
+        task_name_entry.insert(0, "秒表记录")
+        
+        # 确认按钮
+        def confirm_save():
+            name = task_name_entry.get()
+            if not name:
+                name = "秒表记录"
+            
+            # 保存到历史
+            history = self.load_stopwatch_history()
+            history_entry = {
+                "task_name": name,
+                "duration": record["time"],
+                "completed_at": datetime.now().isoformat()
+            }
+            history.append(history_entry)
+            self.save_stopwatch_history(history)
+            
+            messagebox.showinfo("成功", "记录已保存到历史")
+            save_window.destroy()
+        
+        ctk.CTkButton(save_window, text="保存", command=confirm_save).grid(row=1, column=0, columnspan=2, padx=20, pady=20)
 
 if __name__ == "__main__":
     app = CountdownTool()
